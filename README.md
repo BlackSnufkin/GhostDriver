@@ -14,5 +14,5 @@ GhostDriver is a Rust-built yet another AV killer tool using BYOVD.
 
 
 # Reference
-https://github.com/keowu/BadRentdrv2
-https://unit42.paloaltonetworks.com/agonizing-serpens-targets-israeli-tech-higher-ed-sectors/
+(https://github.com/keowu/BadRentdrv2)
+(https://unit42.paloaltonetworks.com/agonizing-serpens-targets-israeli-tech-higher-ed-sectors/)
