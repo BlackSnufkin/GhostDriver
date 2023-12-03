@@ -10,7 +10,8 @@ GhostDriver is a Rust-built yet another AV killer tool using BYOVD.
 4. Run: Execute the GhostDriver binary
 
 # POC
-![Screenshot 2023-12-03 013931](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/a3f28bbe-14ba-4afe-b9c3-66e9e3df1ccc)
+![poc](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/7db7ef4f-b508-431a-8dbc-91861a197599)
+
 
 # Reference
 https://github.com/keowu/BadRentdrv2
