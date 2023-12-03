@@ -1,7 +1,7 @@
 # GhostDriver 👻
 
 ## About
-GhostDriver is a Rust-built yet another AV killer tool using BYOVD.
+GhostDriver is a Rust-built AV killer tool using BYOVD.
 
 ## Get Started
 1. Install Rust from [rust-lang.org](https://www.rust-lang.org)
