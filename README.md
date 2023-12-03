@@ -1,4 +1,4 @@
-# GhostDriver [👻]
+# GhostDriver 👻
 
 ## About
 GhostDriver is a Rust-built yet another AV killer tool using BYOVD.
