@@ -26,12 +26,12 @@ FLAGS:
 OPTIONS:
     -n, --name=process_names
 
-USAGE:
+EXAMPLES:
         .\GhostDriver.exe -n msmpeng.exe,svchost.exe
         .\GhostDriver.exe --name msmpeng.exe
         .\GhostDriver.exe (uses default processes)
-
 ```
+
 - Change line 3307 for the defualt Process names
 
 ```text
@@ -42,8 +42,7 @@ let default_process_names = vec!["msmpeng.exe"];
 
 # POC
 
-![gd2](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/0b465997-c3ea-45b5-86da-61e4551636fe)
-
+![gd2](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/c6897b4d-7414-4ee0-8fb0-7a25d036f903)
 
 # Reference
 - https://github.com/keowu/BadRentdrv2
