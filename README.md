@@ -34,7 +34,8 @@ USAGE:
 
 
 # POC
-![poc](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/7db7ef4f-b508-431a-8dbc-91861a197599)
+
+![gd2](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/0b465997-c3ea-45b5-86da-61e4551636fe)
 
 
 # Reference
