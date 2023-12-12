@@ -9,6 +9,13 @@ GhostDriver is a Rust-built AV killer tool using BYOVD.
 3. Build: `cargo build --release  --target=x86_64-pc-windows-msvc`
 4. Run: Execute the GhostDriver binary
 
+- Change line 3307 for the defualt Process names
+
+```text
+// Define default process names
+   let default_process_names = vec!["msmpeng.exe"];
+```
+
 ## Usage:
 ```text
 GhostDriver.exe 2.0
