@@ -13,7 +13,7 @@ GhostDriver is a Rust-built AV killer tool using BYOVD.
 
 ```text
 // Define default process names
-   let default_process_names = vec!["msmpeng.exe"];
+let default_process_names = vec!["msmpeng.exe"];
 ```
 
 ## Usage:
