@@ -9,6 +9,30 @@ GhostDriver is a Rust-built AV killer tool using BYOVD.
 3. Build: `cargo build --release  --target=x86_64-pc-windows-msvc`
 4. Run: Execute the GhostDriver binary
 
+## Usage:
+```text
+GhostDriver.exe 2.0
+BlackSnufkin
+Kills processes by name using a Ghost Driver
+
+USAGE:
+    GhostDriver.exe [FLAGS] [OPTIONS]
+
+FLAGS:
+    -h, --help       Prints help information
+    -v, --version    Prints version information
+
+OPTIONS:
+    -n, --name=process_names
+
+USAGE:
+        .\GhostDriver.exe -n msmpeng.exe,svchost.exe
+        .\GhostDriver.exe --name msmpeng.exe
+        .\GhostDriver.exe (uses default processes)
+
+```
+
+
 # POC
 ![poc](https://github.com/BlackSnufkin/GhostDriver/assets/61916899/7db7ef4f-b508-431a-8dbc-91861a197599)
 
