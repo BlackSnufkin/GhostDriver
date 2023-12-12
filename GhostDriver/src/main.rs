@@ -3294,7 +3294,7 @@ fn main() {
              .takes_value(true)
              .multiple(false) 
              .required(false)
-             .help("\n\nUSAGE:\n\
+             .help("\n\nEXAMPLES:\n\
                          \t.\\GhostDriver.exe -n msmpeng.exe,svchost.exe\n\
                          \t.\\GhostDriver.exe --name msmpeng.exe\n\
                          \t.\\GhostDriver.exe (uses default processes)\n"))
